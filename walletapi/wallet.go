@@ -143,7 +143,7 @@ func (w *Wallet_Memory) TokenAdd(scid crypto.Hash) (err error) {
 
 // generate keys from using random numbers
 func Generate_Keys_From_Random() (user *Account, err error) {
-	user = &Account{Ringsize: 16, FeesMultiplier: 2.0}
+	user = &Account{Ringsize: 32, FeesMultiplier: 2.0}
 	seed := crypto.RandomScalarBNRed()
 	user.Keys = Generate_Keys_From_Seed(seed)
 
@@ -163,7 +163,7 @@ func Generate_Keys_From_Seed(Seed *crypto.BNRed) (keys _Keys) {
 
 // generate user account using recovery seeds
 func Generate_Account_From_Recovery_Words(words string) (user *Account, err error) {
-	user = &Account{Ringsize: 16, FeesMultiplier: 2.0}
+	user = &Account{Ringsize: 32, FeesMultiplier: 2.0}
 	language, seed, err := mnemonics.Words_To_Key(words)
 	if err != nil {
 		return
@@ -176,7 +176,7 @@ func Generate_Account_From_Recovery_Words(words string) (user *Account, err erro
 }
 
 func Generate_Account_From_Seed(Seed *crypto.BNRed) (user *Account, err error) {
-	user = &Account{Ringsize: 16, FeesMultiplier: 2.0}
+	user = &Account{Ringsize: 32, FeesMultiplier: 2.0}
 
 	// TODO check whether the seed is invalid
 	user.Keys = Generate_Keys_From_Seed(Seed)
