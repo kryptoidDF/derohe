@@ -7,6 +7,7 @@ This is a **beta fork** of the original [civilware/derohe](https://github.com/ci
 
 ## 🔧 Changes in This Fork
 
+- **Fix for randomness reuse** (Stops brute forcing of transaction payloads)
 - **Default ring size** has been set to **32**
 - The `--remote` flag now points to the **DERO Foundation public node**
 
