@@ -34,5 +34,5 @@ var Mainnet_seed_nodes = []string{
 
 // some seed node for testnet
 var Testnet_seed_nodes = []string{
-	"212.8.242.60:40401",
+	"69.30.234.163:40401",
 }
