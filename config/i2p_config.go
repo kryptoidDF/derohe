@@ -15,7 +15,8 @@ var Mainnet_I2P_seed_nodes = []string{
 // I2P seed nodes for testnet
 var Testnet_I2P_seed_nodes = []string{
 	// Testnet I2P nodes
-	// Example: "testnetnode.i2p:40401",
+	// Format: "base32address.i2p:40401"
+	// Example: "testnetnode1234567890abcdefghijklmnopqrstuvwxyz12345.i2p:40401",
 }
 
 // I2P Configuration defaults

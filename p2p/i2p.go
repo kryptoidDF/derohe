@@ -95,8 +95,8 @@ func InitI2P(samHost string, samPort int) (*I2PSession, error) {
 		samHost:            samHost,
 		samPort:            samPort,
 		enabled:            false,
-		maxConcurrentConns: 50,                 // Limit concurrent I2P connections
-		connectionTimeout:  30 * time.Second,   // I2P connections timeout
+		maxConcurrentConns: 50,               // Limit concurrent I2P connections
+		connectionTimeout:  30 * time.Second, // I2P connections timeout
 	}
 
 	// Try to connect to SAM API with strict timeout
