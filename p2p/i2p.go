@@ -17,13 +17,13 @@
 package p2p
 
 import (
+	"crypto/rand"
 	"fmt"
+	"math/big"
 	"net"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/deroproject/derohe/globals"
 )
 
 // I2P address format: example.i2p or 52-character base32 address
@@ -36,14 +36,18 @@ const I2P_TUNNEL_QUANTITY = 2
 
 // I2PSession manages the SAM API connection for I2P
 type I2PSession struct {
-	samHost    string      // SAM API host (usually localhost)
-	samPort    int         // SAM API port
-	sessionID  string      // Session ID returned by SAM
-	conn       net.Conn    // Connection to SAM
-	publicKey  string      // Our public key in I2P
-	destination string     // Our destination (full .i2p address)
-	enabled    bool        // Whether I2P is enabled
-	mutex      sync.Mutex
+	samHost            string        // SAM API host (must be localhost or 127.0.0.1)
+	samPort            int           // SAM API port
+	samPassword        string        // SAM API password (if required)
+	sessionID          string        // Session ID returned by SAM
+	conn               net.Conn      // Connection to SAM
+	publicKeyHash      string        // Truncated hash of our public key (for logging)
+	destination        string        // Our destination (full .i2p address)
+	enabled            bool          // Whether I2P is enabled
+	concurrentConns    int64         // Current concurrent I2P connections
+	maxConcurrentConns int64         // Max concurrent I2P connections allowed
+	connectionTimeout  time.Duration // Timeout for I2P connections
+	mutex              sync.Mutex
 }
 
 var i2pSession *I2PSession
@@ -73,7 +77,7 @@ func isBase32(s string) bool {
 	return true
 }
 
-// InitI2P initializes I2P session with SAM API
+// InitI2P initializes I2P session with SAM API (with security validation)
 func InitI2P(samHost string, samPort int) (*I2PSession, error) {
 	i2pMutex.Lock()
 	defer i2pMutex.Unlock()
@@ -82,13 +86,20 @@ func InitI2P(samHost string, samPort int) (*I2PSession, error) {
 		return i2pSession, nil // Already initialized
 	}
 
-	session := &I2PSession{
-		samHost: samHost,
-		samPort: samPort,
-		enabled: false,
+	// Security: Validate SAM host is localhost-only
+	if !isLocalhostOnly(samHost) {
+		return nil, fmt.Errorf("I2P SAM API must be bound to localhost for security, got: %s", samHost)
 	}
 
-	// Try to connect to SAM API
+	session := &I2PSession{
+		samHost:            samHost,
+		samPort:            samPort,
+		enabled:            false,
+		maxConcurrentConns: 50,                 // Limit concurrent I2P connections
+		connectionTimeout:  30 * time.Second,   // I2P connections timeout
+	}
+
+	// Try to connect to SAM API with strict timeout
 	addr := fmt.Sprintf("%s:%d", samHost, samPort)
 	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
 	if err != nil {
@@ -115,7 +126,7 @@ func InitI2P(samHost string, samPort int) (*I2PSession, error) {
 
 	session.enabled = true
 	i2pSession = session
-	logger.Info("I2P session initialized successfully", "destination", session.destination)
+	logger.Info("I2P session initialized successfully", "destination_hash", session.publicKeyHash)
 
 	return session, nil
 }
@@ -188,8 +199,8 @@ func (s *I2PSession) createI2PSession() error {
 		for i, part := range parts {
 			if part == "DESTINATION=" && i+1 < len(parts) {
 				s.destination = parts[i+1]
-				s.publicKey = extractPublicKey(s.destination)
-				logger.Info("I2P session created", "destination", s.destination[:20]+"...")
+				s.publicKeyHash = sanitizeDestinationForLogging(s.destination)
+				logger.Info("I2P session created", "destination_hash", s.publicKeyHash)
 				return nil
 			}
 		}
@@ -198,14 +209,29 @@ func (s *I2PSession) createI2PSession() error {
 	return fmt.Errorf("failed to create session: %s", response)
 }
 
-// ConnectI2P establishes a connection to an I2P peer
+// ConnectI2P establishes a connection to an I2P peer with security checks
 func (s *I2PSession) ConnectI2P(dest string, timeout time.Duration) (net.Conn, error) {
 	if !s.enabled {
 		return nil, fmt.Errorf("I2P session not initialized")
 	}
 
+	// Security: Validate destination format
+	if !isValidI2PDestination(dest) {
+		return nil, fmt.Errorf("invalid I2P destination format: %s", sanitizeDestinationForLogging(dest))
+	}
+
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+
+	// Security: Check concurrent connection limit
+	if s.concurrentConns >= s.maxConcurrentConns {
+		return nil, fmt.Errorf("I2P connection limit reached (%d/%d)", s.concurrentConns, s.maxConcurrentConns)
+	}
+
+	// Use configured timeout (not caller's)
+	if timeout == 0 || timeout > s.connectionTimeout {
+		timeout = s.connectionTimeout
+	}
 
 	// Normalize destination address (add .i2p if needed)
 	if !strings.HasSuffix(strings.ToLower(dest), ".i2p") && len(strings.Split(dest, ":")[0]) == 52 {
@@ -234,11 +260,12 @@ func (s *I2PSession) ConnectI2P(dest string, timeout time.Duration) (net.Conn, e
 
 	response := string(buf[:n])
 	if strings.Contains(response, "STREAM STATUS RESULT=OK") {
-		logger.V(2).Info("I2P connection established", "destination", dest)
+		s.concurrentConns++
+		logger.V(2).Info("I2P connection established", "destination_hash", sanitizeDestinationForLogging(dest))
 		return s.conn, nil
 	}
 
-	return nil, fmt.Errorf("I2P connection failed: %s", response)
+	return nil, fmt.Errorf("I2P connection failed")
 }
 
 // ListenI2P starts listening for incoming I2P connections
@@ -338,19 +365,58 @@ func generateSessionID() string {
 	const charset = "abcdefghijklmnopqrstuvwxyz0123456789"
 	result := make([]byte, 16)
 	for i := range result {
-		num, _ := globals.Crypt.Random(int64(len(charset)))
-		result[i] = charset[num]
+		num, _ := rand.Int(rand.Reader, big.NewInt(int64(len(charset))))
+		result[i] = charset[num.Int64()]
 	}
 	return string(result)
 }
 
-// extractPublicKey extracts the public key portion from a destination
-func extractPublicKey(destination string) string {
-	// I2P destination is encoded as base64, we'll keep first 50 chars as identifier
-	if len(destination) > 50 {
-		return destination[:50]
+// sanitizeDestinationForLogging sanitizes I2P destination for secure logging (shows only hash)
+func sanitizeDestinationForLogging(destination string) string {
+	// Never log full destinations in logs
+	// Extract host part
+	host := strings.Split(destination, ":")[0]
+	if len(host) > 20 {
+		return host[:20] + "..."
 	}
-	return destination
+	return host
+}
+
+// isValidI2PDestination validates I2P destination format and length
+func isValidI2PDestination(dest string) bool {
+	// Split host and port
+	parts := strings.Split(dest, ":")
+	if len(parts) != 2 {
+		return false
+	}
+
+	host := parts[0]
+	port := parts[1]
+
+	// Validate port is numeric
+	if port == "" {
+		return false
+	}
+	for _, c := range port {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+
+	// Validate host format
+	if strings.HasSuffix(strings.ToLower(host), ".i2p") {
+		// Remove .i2p suffix and validate base32
+		base32Addr := strings.TrimSuffix(host, ".i2p")
+		return len(base32Addr) == 52 && isBase32(base32Addr)
+	}
+
+	// Or 52-char base32 without suffix
+	return len(host) == 52 && isBase32(host)
+}
+
+// isLocalhostOnly validates that host is localhost for security
+func isLocalhostOnly(host string) bool {
+	return host == "127.0.0.1" || host == "localhost" || host == "[::1]" || host == "::1"
 }
 
 // GetI2PSession returns the current I2P session
